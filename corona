@@ -1,0 +1,580 @@
+#!/bin/bash
+
+export POSIXLY_CORRECT=yes
+
+print_help()
+{ echo "NAME"
+  echo "      USAGE ./corona [-h] [FILTERS] [COMMAND] [LOG [LOG2 [...]] "
+  echo ""
+  echo "SPECIFICATION"
+  echo "              -corona - a record analyzer of people with a proven coronavirus infection causing COVID-19"
+  echo ""
+  echo "COMMAND (can be one of): "
+  echo "                          infected
+                                  - counts the number of infected"
+  echo "                          merge
+                                  - merges several log files into one, preserving the original order"
+  echo "                          gender
+                                  - lists the number of infected for each sex"
+  echo "                          age
+                                  - lists statistics on the number of infected people by age"
+  echo "                          daily
+                                  - lists statistics on infected people for each day"
+  echo "                          monthly
+                                  -lists statistics on infected people for each month"
+  echo "                          yearly
+                                  -lists statistics on infected persons for each year"
+  echo "                          countries
+                                  -lists statistics of infected persons for individual countries of the disease (excluding the Czech Republic)"
+  echo "                          districts
+                                  -lists statistics on infected persons for individual districts"
+  echo "                          regions
+                                  -lists statistics of infected persons for individual regions"
+  echo ""
+  echo "FILTERS (can be a combination of the following (each at most once)): "
+  echo "                          -a DATETIME
+                                  - after: only after records of this date are considered (including this date). DATETIME is in the format YYYY-MM-DD."
+  echo "                          -b DATETIME
+                                  - before: only records BEFORE this date (including this date) are considered"
+  echo "                          -g GENDER
+                                  - only records of infected persons of a given sex are considered. GENDER can be M (men) or Z (women)"
+  echo "                          -s [WIDTH]
+                                  - for commands (except merge and infected), it displays data not numerically, but graphically in the form of histograms"
+  echo "                          -h HELP
+                                  - prints help with a brief description of each command and switch."
+}
+
+BDATETIME=9999-99-99
+ADATETIME=0
+GENDERF=false
+SWIDTH=-1
+CREATING_NEWLINE=$(printf "\r\n")
+EXISTING_GENDER=0
+EXISTING_S=0
+EXISTING_FILE=0
+EXISTING_WIDTH=-1
+IS_NUMBER='^[0-9]+$'
+SWIDTH=0
+EXISTING_COMMAND=0
+
+#command and filter acquisition cycle
+while [ "$#" -gt 0 ]; do
+  case $1 in
+    -h)
+        print_help
+        exit 0
+        ;;
+
+    -a)
+      ADATETIME=$2
+      AEXISTING_DATE=1
+      shift
+      ;;
+
+    -b)
+      BDATETIME=$2
+      BEXISTING_DATE=1
+      shift
+      ;;
+
+    -g)
+      GENDERF=$2
+      EXISTING_GENDER=1
+      shift
+      ;;
+
+    -s)
+      if [[ $2 =~  $IS_NUMBER ]]; then
+        SWIDTH=$2
+        EXISTING_WIDTH=1
+        shift
+      fi
+      EXISTING_S=1
+      ;;
+
+    -?*)
+      echo "ERROR: Unknown argument, try -h to open manual">&2
+      exit 1
+      ;;
+
+    *.csv)
+      CSV_FILES="$CSV_FILES$(cat $1 | awk -F, 'NR == 1{next} 1' )"
+      CSV_FILES="$CSV_FILES$CREATING_NEWLINE"
+      EXISTING_FILE=1
+      ;;
+
+    *.csv.gz)
+      CSV_FILES="$CSV_FILES$(gunzip -qc $1 |awk -F, 'NR == 1{next} 1')"
+      CSV_FILES="$CSV_FILES$CREATING_NEWLINE"
+      EXISTING_FILE=1
+      ;;
+
+    *csv.bz2)
+      CSV_FILES="$CSV_FILES$(bzip2 -dc  $1 |awk -F, 'NR == 1{next} 1')"
+      CSV_FILES="$CSV_FILES$CREATING_NEWLINE"
+      EXISTING_FILE=1
+      ;;
+
+    gender|infected|merge|age|daily|monthly|yearly|countries|districts|regions)
+      COMMAND=$1
+      EXISTING_COMMAND=1
+      ;;
+
+    ?*)
+      echo "ERROR: Unknown argument, try -h to open manual" >&2
+      exit 1
+      ;;
+  esac
+  shift
+  done
+
+
+
+
+#if statement for input file from command line
+if [ "$EXISTING_FILE" = 0 ]; then
+  CSV_FILES=`cat`
+  CSV_FILES=$(echo "$CSV_FILES" | awk -F, 'NR == 1{next} 1')
+fi
+
+
+#control date
+echo "$CSV_FILES" |sed 's/^ *//g'  |awk  -F, '$2!~/[0-9][0-9][0-9][0-9]-(0[1-9]|1[0-2])-([0][1-9]|[1-2][0-9]|3[0-1])/{ print "Invalid date: "$0; }'>&2
+
+#fill csv_files with data without lines with bad format of date
+CSV_FILES=$(echo "$CSV_FILES" |sed 's/^ *//g'|  awk  -F, ' $2~/[0-9][0-9][0-9][0-9]-(0[1-9]|1[0-2])-([0][1-9]|[1-2][0-9]|3[0-1])/{ print $0; }')
+
+#control age
+echo "$CSV_FILES" | sed 's/^ *//g'| awk  -F, '$3~/[0-9][0-9][0-9][0-9]/{ print "Invalid age: "$0; }'>&2
+
+#fill csv_files with age without lines with bad format of age
+CSV_FILES=$(echo "$CSV_FILES" |sed 's/^ *//g'|  awk  -F, ' $3!~/[0-9][0-9][0-9][0-9]/{ print $0; }')
+
+#fill csv_files with lines after filter
+if [ "$AEXISTING_DATE" = '1' ]; then
+ CSV_FILES=$(echo "$CSV_FILES" | awk -F ',' -v TMP="$ADATETIME" '{ if ($2 >= TMP ) print $0 }')
+fi
+
+#fill csv_files with lines before filter
+if [ "$BEXISTING_DATE" = '1' ]; then
+  CSV_FILES=$(echo "$CSV_FILES" | awk -F ',' -v TMP="$BDATETIME" '{ if ($2 <= TMP ) print $0 }')
+fi
+
+#fill csv_files with lines that consists only M or Z
+if [ "$EXISTING_GENDER" = '1' ]; then
+  CSV_FILES=$(echo "$CSV_FILES" | awk -F ',' -v TMP="$GENDERF" '{ if ($4 == TMP ) print $0 }')
+fi
+
+#function merges several log files into one, preserving the original order
+merge(){
+  MERGE=$( echo "$CSV_FILES" | awk ' BEGIN { print "id,datum,vek,pohlavi,kraj_nuts_kod,okres_lau_kod,nakaza_v_zahranici,nakaza_zeme_csu_kod,reportovano_khs";};
+                                           {print $0;}')
+  echo "$MERGE"
+}
+
+#if we dont get command
+if [ "$EXISTING_COMMAND" = 0 ]; then
+   merge
+  exit 0
+fi
+
+#######################################################################################################################
+##############################################FUNKCIONS FOR COMMANDS###################################################
+#######################################################################################################################
+
+#function counts the number of infected
+infected(){
+  echo "$CSV_FILES" | awk 'END{ print NR }'
+}
+
+#function lists the number of infected for each sex
+gender(){
+    CUT_and_SORT=$(echo "$CSV_FILES" | cut -d, -f 4 | sort |uniq -c)
+    PRINT_GENDER=$(echo "$CUT_and_SORT" | awk -F ' '  '{
+    if ( $2 == "M" )print "M: "$1;
+    else if ( $2 == "Z" )print "Z: "$1;
+    else none=$1;
+     }END{ if ( none != 0){print "None: "none}}')
+    echo "$PRINT_GENDER"
+}
+
+#function gender creating histogram
+gender_histo(){
+      NUMBER_OF_CROSSES=100000
+
+      CUT_and_SORT=$(echo "$CSV_FILES" | cut -d, -f 4 | sort |uniq -c)
+      PRINT_GENDER=$(echo "$CUT_and_SORT" | awk -F ' '  '{
+        if ( $2 == "M" )print "M: "$1;
+        else if ( $2 == "Z" )print "Z: "$1;
+        else none=$1;
+        }END{ if ( none != 0){print "None: "none}}')
+
+      if [ $EXISTING_WIDTH -eq 1 ]; then
+        NUMBER_OF_CROSSES="$SWIDTH"
+
+        echo "$PRINT_GENDER"|sort -k2 -n -r| awk -F ':' -vNUMBER_OF_CROSSES="$NUMBER_OF_CROSSES" -vNUM_1=0 '
+                                   { if ( NUM_1 == 0){
+                                   NUM_1=1;
+                                   NUMBER_OF_CROSSES=int($2/NUMBER_OF_CROSSES);
+                                   }
+                                   tmp=int($2/NUMBER_OF_CROSSES) ;
+                                     CROSSES=sprintf("%"tmp"s" ,"");
+                                     gsub(" ", "#", CROSSES);
+                                     print  ($1 ": " CROSSES); }'|sort
+      else
+        echo "$PRINT_GENDER"|awk -F ':' -vNUMBER_OF_CROSSES="$NUMBER_OF_CROSSES" '{ tmp=int($2/NUMBER_OF_CROSSES) ;
+                                                                                    CROSSES=sprintf("%"tmp"s" ,"");
+                                                                                    gsub(" ", "#", CROSSES);
+                                                                                    print  ($1 ": " CROSSES) }'
+      fi
+}
+
+#function lists statistics on the number of infected people by age
+age(){
+  CUT_and_SORT=$(echo "$CSV_FILES" | cut -d, -f 3 | sort )
+
+      echo "$CUT_and_SORT" | awk -v count0_5=0 '{
+          if ( $1 <= 5 && $1 >= 0)     ++count0_5;
+          if ( $1 <= 15 && $1 > 5 )   ++count6_15;
+          if ( $1 <= 25 && $1 > 15 )  ++count16_25;
+          if ( $1 <= 35 && $1 > 25 )  ++count26_35;
+          if ( $1 <= 45 && $1 > 35 )  ++count36_45;
+          if ( $1 <= 55 && $1 > 45 )  ++count46_55;
+          if ( $1 <= 65 && $1 > 55 )  ++count56_65;
+          if ( $1 <= 75 && $1 > 65 )  ++count66_75;
+          if ( $1 <= 85 && $1 > 75 )  ++count76_85;
+          if ( $1 <= 95 && $1 > 85 )  ++count86_95;
+          if ( $1 <= 105 && $1 > 95 ) ++count96_105;
+          if ( $1 > 105  )            ++count105;
+          if ($1 == "")               ++count_none;
+
+      }END{ if ( count_none == 0 ) {
+                  print "0-5   : "count0_5 ;
+                  print "6-15  : "count6_15;
+                  print "16-25 : "count16_25;
+                  print "26-35 : "count26_35;
+                  print "36-45 : "count36_45;
+                  print "46-55 : "count46_55;
+                  print "56-65 : "count56_65;
+                  print "66-75 : "count66_75;
+                  print "76-85 : "count76_85;
+                  print "86-95 : "count86_95;
+                  print "96-105: "count96_105;
+                  print ">105  : "count105;}
+            else if(count_none != 0){
+                  print "0-5   : "count0_5 ;
+                  print "6-15  : "count6_15;
+                  print "16-25 : "count16_25;
+                  print "26-35 : "count26_35;
+                  print "36-45 : "count36_45;
+                  print "46-55 : "count46_55;
+                  print "56-65 : "count56_65;
+                  print "66-75 : "count66_75;
+                  print "76-85 : "count76_85;
+                  print "86-95 : "count86_95;
+                  print "96-105: "count96_105;
+                  print ">105  : "count105;
+                  print "None  : "count_none;}
+            }'
+}
+
+#function age creating histogram
+age_histo(){
+    NUMBER_OF_CROSSES=10000
+#    echo "$(age)"
+   if [ $EXISTING_WIDTH -eq 1 ]; then
+
+         NUMBER_OF_CROSSES="$SWIDTH"
+
+         age|sort -k3 -n -r| awk -F ':' -vNUMBER_OF_CROSSES="$NUMBER_OF_CROSSES" -vNUM_1=0 '
+                                         { if ( NUM_1 == 0){
+                                         NUM_1=1;
+                                         NUMBER_OF_CROSSES=int($2/NUMBER_OF_CROSSES);
+                                         }
+                                         tmp=int($2/NUMBER_OF_CROSSES) ;
+                                           CROSSES=sprintf("%"tmp"s" ,"");
+                                           gsub(" ", "#", CROSSES);
+                                           print  ($1 ": " CROSSES); }'|sort
+    else
+         age|awk -F ':' -vNUMBER_OF_CROSSES="$NUMBER_OF_CROSSES" '{ tmp=int($2/NUMBER_OF_CROSSES) ;
+                                                                                  CROSSES=sprintf("%"tmp"s" ,"");
+                                                                                  gsub(" ", "#", CROSSES);
+                                                                                  print  ($1 ": " CROSSES) }'
+    fi
+}
+
+#function -lists statistics on infected persons for each year
+yearly(){
+    COLLUM_WITH_YEARS=$(echo "$CSV_FILES" | cut -d, -f 2 |awk -F,  '{$1=substr($1,1,4)}1' | sort | uniq -c  | awk '{ if ( $2 != "" ){print $2": "$1}
+                                                                                                                  else if ( $2 =="" ) {count=$1}
+                                                                                                                  } END{if (count != 0){print "None: "count}}')
+    echo "$COLLUM_WITH_YEARS"
+}
+
+
+#function yearly creating histogram
+yearly_histo(){
+    NUMBER_OF_CROSSES=100000
+
+    if [ $EXISTING_WIDTH -eq 1 ]; then
+      NUMBER_OF_CROSSES="$SWIDTH"
+
+      yearly|sort -k2 -n -r| awk -F ':' -vNUMBER_OF_CROSSES="$NUMBER_OF_CROSSES" -vNUM_1=0 '
+                                      { if ( NUM_1 == 0){
+                                      NUM_1=1;
+                                      NUMBER_OF_CROSSES=int($2/NUMBER_OF_CROSSES);
+                                      }
+                                      tmp=int($2/NUMBER_OF_CROSSES) ;
+                                        CROSSES=sprintf("%"tmp"s" ,"");
+                                        gsub(" ", "#", CROSSES);
+                                        print  ($1 ": " CROSSES); }'|sort
+    else
+      yearly|awk -F ':' -vNUMBER_OF_CROSSES="$NUMBER_OF_CROSSES" '{ tmp=int($2/NUMBER_OF_CROSSES) ;
+                                                                                  CROSSES=sprintf("%"tmp"s" ,"");
+                                                                                  gsub(" ", "#", CROSSES);
+                                                                                  print  ($1 ": " CROSSES) }'
+    fi
+}
+
+#function lists statistics on infected people for each month
+monthly(){
+    COLLUM_WITH_MONTHS=$(echo "$CSV_FILES" | cut -d, -f 2 |awk -F,  '{$1=substr($1,0,7)}1' | sort | uniq -c  | awk '{ if ( $2 != "" ){print $2": "$1}
+                                                                                                                    else if ( $2 =="" ) {count=$1}
+                                                                                                                    } END{if (count != 0){print "None: "count}}')
+    echo "$COLLUM_WITH_MONTHS"
+}
+
+#function monthly creating histogram
+monthly_histo(){
+      NUMBER_OF_CROSSES=10000
+
+  if [ $EXISTING_WIDTH -eq 1 ]; then
+    NUMBER_OF_CROSSES="$SWIDTH"
+
+    monthly|sort -k2 -n -r| awk -F ':' -vNUMBER_OF_CROSSES="$NUMBER_OF_CROSSES" -vNUM_1=0 '
+                                     { if ( NUM_1 == 0){
+                                     NUM_1=1;
+                                     NUMBER_OF_CROSSES=int($2/NUMBER_OF_CROSSES);
+                                     }
+                                     tmp=int($2/NUMBER_OF_CROSSES) ;
+                                       CROSSES=sprintf("%"tmp"s" ,"");
+                                       gsub(" ", "#", CROSSES);
+                                       print  ($1 ": " CROSSES); }'|sort
+  else
+    monthly|awk -F ':' -vNUMBER_OF_CROSSES="$NUMBER_OF_CROSSES" '{ tmp=int($2/NUMBER_OF_CROSSES) ;
+                                                                                CROSSES=sprintf("%"tmp"s" ,"");
+                                                                                gsub(" ", "#", CROSSES);
+                                                                                print  ($1 ": " CROSSES) }'
+  fi
+}
+#function lists statistics on infected people for each day
+daily(){
+    echo "$CSV_FILES" | cut -d, -f 2 |awk -F,  '{$1=substr($1,0,10)}1' | sort | uniq -c  | awk '{ if ( $2 != "" ){print $2": "$1}
+                                                                                                                  else if ( $2 =="" ) {count=$1}
+                                                                                                                  } END{if (count != 0){print "None: "count}}'
+}
+
+#function daily creating histogram
+daily_histo(){
+  NUMBER_OF_CROSSES=500
+
+  if [ $EXISTING_WIDTH -eq 1 ]; then
+    NUMBER_OF_CROSSES="$SWIDTH"
+
+    daily|sort -k2 -n -r| awk -F ':' -vNUMBER_OF_CROSSES="$NUMBER_OF_CROSSES" -vNUM_1=0 '
+                                                              { if ( NUM_1 == 0){
+                                                              NUM_1=1;
+                                                              NUMBER_OF_CROSSES=int($2/NUMBER_OF_CROSSES);
+                                                              }
+                                                              tmp=int($2/NUMBER_OF_CROSSES) ;
+                                                              CROSSES=sprintf("%"tmp"s" ,"");
+                                                              gsub(" ", "#", CROSSES);
+                                                              print  ($1 ": " CROSSES); }'|sort
+  else
+    daily|awk -F ':' -vNUMBER_OF_CROSSES="$NUMBER_OF_CROSSES" '{ tmp=int($2/NUMBER_OF_CROSSES) ;
+                                                               CROSSES=sprintf("%"tmp"s" ,"");
+                                                               gsub(" ", "#", CROSSES);
+                                                               print  ($1 ": " CROSSES) }'
+  fi
+}
+
+#function lists statistics of infected persons for individual regions
+regions(){
+    COLLUM_WITH_REGIONS=$(echo "$CSV_FILES" | cut -d, -f 5 | sort | uniq -c  | awk '{ if ( $2 !="" ){print $2": "$1}
+                                                                                      else if ( $2 =="" ) {count=$1}
+                                                                                      } END{if (count != 0){print "None: "count}}' )
+    echo "$COLLUM_WITH_REGIONS"
+}
+
+#function regions creating histogram
+regions_histo(){
+    NUMBER_OF_CROSSES=10000
+
+  if [ $EXISTING_WIDTH -eq 1 ]; then
+    NUMBER_OF_CROSSES="$SWIDTH"
+
+    regions|sort -k2 -n -r| awk -F ':' -vNUMBER_OF_CROSSES="$NUMBER_OF_CROSSES" -vNUM_1=0 '
+                                                                 { if ( NUM_1 == 0){
+                                                                 NUM_1=1;
+                                                                 NUMBER_OF_CROSSES=int($2/NUMBER_OF_CROSSES);
+                                                                 }
+                                                                 tmp=int($2/NUMBER_OF_CROSSES) ;
+                                                                  CROSSES=sprintf("%"tmp"s" ,"");
+                                                                  gsub(" ", "#", CROSSES);
+                                                                  print  ($1 ": " CROSSES); }'|sort
+  else
+    regions|awk -F ':' -vNUMBER_OF_CROSSES="$NUMBER_OF_CROSSES" '{ tmp=int($2/NUMBER_OF_CROSSES) ;
+                                                                  CROSSES=sprintf("%"tmp"s" ,"");
+                                                                  gsub(" ", "#", CROSSES);
+                                                                  print  ($1 ": " CROSSES) }'
+  fi
+}
+
+#function lists statistics on infected persons for individual districts
+districts(){
+    COLLUM_WITH_DISTRICTS=$(echo "$CSV_FILES" | cut -d, -f 6 | sort | uniq -c  | awk '{ if ( $2 !="" ){print $2": "$1}
+                                                                                       else if ( $2 =="" ) {count=$1}}
+                                                                                       END{if (count != 0) {print "None: "count}}' )
+    echo "$COLLUM_WITH_DISTRICTS"
+}
+
+#function districts creating histogram
+districts_histo(){
+  NUMBER_OF_CROSSES=1000
+
+  if [ $EXISTING_WIDTH -eq 1 ]; then
+    NUMBER_OF_CROSSES="$SWIDTH"
+
+    districts|sort -k2 -n -r| awk -F ':' -vNUMBER_OF_CROSSES="$NUMBER_OF_CROSSES" -vNUM_1=0 '
+                                                                 { if ( NUM_1 == 0){
+                                                                 NUM_1=1;
+                                                                 NUMBER_OF_CROSSES=int($2/NUMBER_OF_CROSSES);
+                                                                 }
+                                                                 tmp=int($2/NUMBER_OF_CROSSES) ;
+                                                                  CROSSES=sprintf("%"tmp"s" ,"");
+                                                                  gsub(" ", "#", CROSSES);
+                                                                  print  ($1 ": " CROSSES); }'|sort
+  else
+    districts|awk -F ':' -vNUMBER_OF_CROSSES="$NUMBER_OF_CROSSES" '{ tmp=int($2/NUMBER_OF_CROSSES) ;
+                                                                  CROSSES=sprintf("%"tmp"s" ,"");
+                                                                  gsub(" ", "#", CROSSES);
+                                                                  print  ($1 ": " CROSSES) }'
+  fi
+}
+
+#function lists statistics of infected persons for individual countries of the disease (excluding the Czech Republic)
+countries(){
+    COLLUM_WITH_COUNTRIES=$(echo "$CSV_FILES" | cut -d, -f 8 | sort | uniq -c  | awk ' { if ( $2 == "CZ")next;
+                                                                                        if ( match($2,/[^ ]/ ) )print $2": "$1;}' )
+    echo "$COLLUM_WITH_COUNTRIES"
+}
+
+#function countries creating histogram
+countries_histo(){
+  NUMBER_OF_CROSSES=100
+
+  if [ $EXISTING_WIDTH -eq 1 ]; then
+    NUMBER_OF_CROSSES="$SWIDTH"
+
+    countries|sort -k2 -n -r| awk -F ':' -vNUMBER_OF_CROSSES="$NUMBER_OF_CROSSES" -vNUM_1=0 '
+                                                                  { if ( NUM_1 == 0){
+                                                                  NUM_1=1;
+                                                                  NUMBER_OF_CROSSES=int($2/NUMBER_OF_CROSSES);
+                                                                  }
+                                                                  tmp=int($2/NUMBER_OF_CROSSES) ;
+                                                                  CROSSES=sprintf("%"tmp"s" ,"");
+                                                                  gsub(" ", "#", CROSSES);
+                                                                  print  ($1 ": " CROSSES); }'|sort
+  else
+    countries|awk -F ':' -vNUMBER_OF_CROSSES="$NUMBER_OF_CROSSES" '{ tmp=int($2/NUMBER_OF_CROSSES) ;
+                                                                   CROSSES=sprintf("%"tmp"s" ,"");
+                                                                   gsub(" ", "#", CROSSES);
+                                                                   print  ($1 ": " CROSSES) }'
+  fi
+}
+
+  #case for commands
+  #calling functions
+  case $COMMAND in
+    infected)
+      infected
+      exit 0
+      ;;
+
+    merge)
+      merge
+      exit 0
+      ;;
+
+    gender)
+      if [ "$EXISTING_S" -eq 1 ];then
+        gender_histo
+      else
+        gender
+      fi
+      exit 0
+      ;;
+
+    age)
+      if [ "$EXISTING_S" -eq 1 ];then
+          age_histo
+      else
+        age
+      fi
+      exit 0
+      ;;
+
+    daily)
+      if [ "$EXISTING_S" -eq 1 ];then
+        daily_histo
+      else
+        daily
+      fi
+      exit 0
+      ;;
+
+    monthly)
+      if [ "$EXISTING_S" -eq 1 ];then
+        monthly_histo
+      else
+        monthly
+      fi
+      exit 0
+      ;;
+
+    yearly)
+      if [ "$EXISTING_S" -eq 1 ];then
+          yearly_histo
+      else
+        yearly
+      fi
+      exit 0
+      ;;
+
+    countries)
+      if [ "$EXISTING_S" -eq 1 ];then
+          countries_histo
+      else
+        countries
+      fi
+      exit 0
+      ;;
+
+    districts)
+      if [ "$EXISTING_S" -eq 1 ];then
+          districts_histo
+      else
+        districts
+      fi
+      exit 0
+      ;;
+
+    regions)
+      if [ "$EXISTING_S" -eq 1 ];then
+          regions_histo
+      else
+        regions
+      fi
+      exit 0
+      ;;
+    esac
